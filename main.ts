@@ -1,27 +1,24 @@
-// news-image-20261121 entry (Node 22, standard library only).
-//
-// The image is built in this session and shipped as entry.png beside this
-// file: a one-day front page for Saturday, 21 November 2026, drawn
-// programmatically (PIL) with real text and flat drawn icons.
-// This program's only job is to hand that image to the grader, unchanged.
-//
-// Run it the way the grader does:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+/**
+ * Entry point for the make.fun news-image bounty (21 November 2026).
+ *
+ * The front page is rendered ahead of time by build_image.py into
+ * entry.png next to this file. This program only copies that file,
+ * byte for byte, into /output/entry.png. Copying is deterministic,
+ * so two runs always write identical bytes.
+ */
 
-import { copyFileSync, existsSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-const src = new URL('./entry.png', import.meta.url);
+const here = dirname(fileURLToPath(import.meta.url));
+const source = join(here, "entry.png");
 
-if (!existsSync(src)) {
-  throw new Error('entry.png is missing from the repository');
+const bytes = readFileSync(source);
+if (bytes.length === 0) {
+  throw new Error("entry.png is empty, refusing to write an empty output");
 }
 
-const dest = join(outDir, 'entry.png');
-copyFileSync(src, dest);
-
-// Sanity check: the copy must be whole — same byte count as the source.
-if (statSync(dest).size !== statSync(src).size) {
-  throw new Error('entry.png copy is incomplete');
-}
+mkdirSync("/output", { recursive: true });
+writeFileSync("/output/entry.png", bytes);
+console.log(`copied ${bytes.length} bytes to /output/entry.png`);

@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Front page for Saturday 21 November 2026 (make.fun news-image-20261121).
+"""Front page for Saturday 21 November 2026.
 
-Draws one 1024x1024 PNG with PIL: a burgundy masthead, the date, a Kryvyi
-Rih hero over a drawn night skyline, four story cards and an also-today
-strip. Every word is rendered text; every picture is flat shapes. No
-network, no generated text, no copied art.
+Renders a 1024x1024 newspaper-style summary of the day's world news
+for the make.fun news-image bounty. Everything is drawn with Pillow
+primitives (rectangles, ellipses, lines, polygons) so the output is
+fully deterministic: running this script twice produces identical bytes.
 
-Stories (verified 21 Nov 2026): Russian double-tap strike on Kryvyi Rih
-(kills a 7-year-old boy and a 20-year-old paramedic, 42 injured); COP31
-spills into overtime in Antalya; ICJ finds Myanmar committed genocide
-against the Rohingya; Cyclone Akvan weakens over Odisha; JPMorgan, Visa
-and Mastercard confirm third-party vendor breaches.
+Layout, top to bottom:
+  masthead banner -> dateline -> night-skyline hero art -> hero story
+  -> 2x2 grid of smaller stories -> "also today" footer strip.
 """
 
 import math
@@ -18,303 +16,343 @@ import random
 
 from PIL import Image, ImageDraw, ImageFont
 
-SIZE = 1024
-MARGIN = 28
+# ---------------------------------------------------------------- palette
 
-PAL = {
-    "paper": (247, 243, 232),
-    "ink": (26, 26, 26),
-    "white": (255, 255, 255),
-    "red": (178, 28, 28),
-    "wine": (112, 20, 28),
-    "gold": (201, 162, 39),
-    "edge": (201, 194, 172),
-    "body": (58, 54, 46),
-    "strip": (232, 226, 208),
-    "sand": (228, 196, 150),
+INK = (26, 26, 26)          # near-black body text
+PAPER = (247, 241, 222)      # warm cream page background
+CARD = (255, 253, 245)       # story card background
+MAROON = (124, 15, 30)      # masthead banner
+GOLD = (232, 200, 106)       # masthead subtitle + rule
+RULE_RED = (166, 25, 46)     # dateline rule + kickers
+KICKER = (176, 30, 40)       # section labels
+NIGHT = (25, 25, 48)         # hero skyline sky
+STEEL = (42, 42, 68)         # skyline buildings
+LIT = (245, 215, 110)        # lit windows
+FLARE = (240, 138, 36)       # missile trails / explosions
+SKY = (214, 232, 240)        # pale blue art backgrounds
+SAND = (238, 230, 204)       # footer strip
+EDGE = (201, 191, 165)       # card borders
+MUTE = (51, 51, 51)          # body copy
+
+W = H = 1024
+MARGIN = 28
+INNER = W - 2 * MARGIN       # 968
+
+SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+SANS_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+SERIF_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
+
+_cache = {}
+
+
+def typeface(size, bold=False, serif=False):
+    """Cached font loader."""
+    key = (size, bold, serif)
+    if key not in _cache:
+        path = SERIF_BOLD if serif else (SANS_BOLD if bold else SANS)
+        _cache[key] = ImageFont.truetype(path, size)
+    return _cache[key]
+
+
+# ---------------------------------------------------------------- text flow
+
+def split_lines(draw, text, font, max_w):
+    """Greedy word wrap; returns a list of lines fitting max_w pixels."""
+    lines, current = [], ""
+    for word in text.split():
+        trial = word if not current else current + " " + word
+        if draw.textlength(trial, font=font) <= max_w:
+            current = trial
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def put_lines(draw, x, y, lines, font, fill, leading):
+    """Draw stacked lines; returns the y just below the last line."""
+    for line in lines:
+        draw.text((x, y), line, font=font, fill=fill)
+        y += leading
+    return y
+
+
+def put_centered(draw, cx, y, text, font, fill):
+    draw.text((cx - draw.textlength(text, font=font) / 2, y),
+              text, font=font, fill=fill)
+
+
+# ---------------------------------------------------------------- hero art
+
+def paint_night_city(draw, box, rng):
+    """Night skyline: dark sky, lit towers, missile trails, two blasts."""
+    x0, y0, x1, y1 = box
+    draw.rectangle(box, fill=NIGHT)
+    # stars
+    for _ in range(46):
+        sx = rng.randint(x0 + 4, x1 - 4)
+        sy = rng.randint(y0 + 4, y1 - 60)
+        r = rng.choice([1, 1, 2])
+        draw.ellipse([sx - r, sy - r, sx + r, sy + r], fill=(235, 235, 245))
+    # towers along the bottom
+    cursor = x0
+    while cursor < x1 - 20:
+        tw = rng.randint(26, 58)
+        th = rng.randint(28, 88)
+        shade = rng.randint(-6, 10)
+        colour = tuple(max(0, min(255, c + shade)) for c in STEEL)
+        draw.rectangle([cursor, y1 - th, cursor + tw, y1], fill=colour)
+        for _ in range(th // 9):
+            wx = rng.randint(cursor + 4, cursor + tw - 7)
+            wy = rng.randint(y1 - th + 5, y1 - 8)
+            if rng.random() < 0.55:
+                draw.rectangle([wx, wy, wx + 3, wy + 4], fill=LIT)
+        cursor += tw + rng.randint(2, 9)
+    # missile trails falling from the top edge
+    for tx in (140, 330, 590, 800):
+        tip_y = rng.randint(y1 - 78, y1 - 52)
+        draw.line([(tx - 26, y0 + 2), (tx, tip_y)], fill=FLARE, width=3)
+        draw.ellipse([tx - 7, tip_y - 7, tx + 7, tip_y + 7], fill=(250, 214, 90))
+    # two starburst explosions among the towers
+    for bx, by in ((235, y1 - 62), (655, y1 - 58)):
+        for k in range(9):
+            ang = k * 40 + rng.randint(-6, 6)
+            dx = math.cos(math.radians(ang)) * 15
+            dy = math.sin(math.radians(ang)) * 15
+            draw.line([(bx, by), (bx + dx, by + dy)],
+                      fill=FLARE if k % 2 else (250, 200, 60), width=2)
+        draw.ellipse([bx - 5, by - 5, bx + 5, by + 5], fill=(255, 226, 120))
+
+
+# ---------------------------------------------------------------- card art
+
+def paint_planet(draw, box):
+    """Globe with orbit ring, a small sun and a wall clock."""
+    x0, y0, x1, y1 = box
+    draw.rectangle(box, fill=SKY)
+    cx, cy = (x0 + x1) // 2 - 40, (y0 + y1) // 2 + 6
+    draw.ellipse([x0 + 18, y0 + 6, x0 + 58, y0 + 46], fill=(250, 214, 90),
+                 outline=(224, 170, 40), width=2)
+    draw.ellipse([cx - 46, cy - 46, cx + 46, cy + 46], fill=(52, 110, 190))
+    draw.ellipse([cx - 30, cy - 26, cx - 2, cy + 2], fill=(74, 160, 90))
+    draw.ellipse([cx + 6, cy + 8, cx + 30, cy + 30], fill=(74, 160, 90))
+    draw.ellipse([cx - 58, cy - 58, cx + 58, cy + 58], outline=(255, 255, 255),
+                 width=3)
+    draw.ellipse([x1 - 62, y0 + 22, x1 - 22, y0 + 62], fill=(255, 255, 255),
+                 outline=(176, 30, 40), width=2)
+    draw.line([(x1 - 42, y0 + 42), (x1 - 42, y0 + 30)], fill=(176, 30, 40),
+              width=2)
+    draw.line([(x1 - 42, y0 + 42), (x1 - 30, y0 + 46)], fill=(176, 30, 40),
+              width=2)
+
+
+def paint_court(draw, box):
+    """Classical courthouse facade with a small scales emblem."""
+    x0, y0, x1, y1 = box
+    draw.rectangle(box, fill=(240, 234, 214))
+    mid = (x0 + x1) // 2
+    draw.polygon([(mid - 130, y0 + 34), (mid + 130, y0 + 34),
+                  (mid, y0 + 2)], fill=(122, 90, 52))
+    for cx in (mid - 96, mid - 48, mid, mid + 48, mid + 96):
+        draw.rectangle([cx - 11, y0 + 36, cx + 11, y0 + 86],
+                       fill=(252, 250, 240), outline=(190, 180, 150))
+    draw.rectangle([x0 + 16, y0 + 86, x1 - 16, y0 + 94], fill=(94, 70, 40))
+    # scales of justice, small and red, centred on the facade
+    sy = y0 + 56
+    draw.line([(mid, sy - 14), (mid, sy + 12)], fill=(176, 30, 40), width=3)
+    draw.line([(mid - 26, sy - 14), (mid + 26, sy - 14)],
+              fill=(176, 30, 40), width=3)
+    for sx in (mid - 26, mid + 26):
+        draw.line([(sx, sy - 14), (sx, sy + 2)], fill=(176, 30, 40), width=2)
+        draw.polygon([(sx - 9, sy + 2), (sx + 9, sy + 2), (sx, sy + 12)],
+                     fill=(176, 30, 40))
+
+
+def paint_storm(draw, box):
+    """Cyclone spiral over a rainy sea, dark band at the bottom."""
+    x0, y0, x1, y1 = box
+    draw.rectangle(box, fill=SKY)
+    cx, cy = (x0 + x1) // 2 + 40, (y0 + y1) // 2 - 4
+    for r, col in ((52, (255, 255, 255)), (40, (150, 190, 215)),
+                   (28, (255, 255, 255)), (16, (90, 140, 180))):
+        draw.arc([cx - r, cy - r, cx + r, cy + r], start=20, end=300,
+                 fill=col, width=5)
+    draw.ellipse([cx - 5, cy - 5, cx + 5, cy + 5], fill=(176, 30, 40))
+    for rx in range(x0 + 30, x1 - 20, 46):
+        draw.line([(rx, y1 - 34), (rx - 8, y1 - 14)], fill=(70, 110, 150),
+                  width=2)
+    draw.rectangle([x0, y1 - 12, x1, y1], fill=(52, 96, 140))
+
+
+def paint_breach(draw, box):
+    """Dark panel with scattered binary digits and a shield keyhole."""
+    x0, y0, x1, y1 = box
+    draw.rectangle(box, fill=(16, 18, 38))
+    rng = random.Random(7)
+    for _ in range(26):
+        bx = rng.randint(x0 + 8, x1 - 14)
+        by = rng.randint(y0 + 8, y1 - 16)
+        draw.text((bx, by), rng.choice("01"),
+                  font=typeface(13), fill=(70, 90, 130))
+    mid = (x0 + x1) // 2
+    cy = (y0 + y1) // 2
+    draw.polygon([(mid - 52, cy - 34), (mid + 52, cy - 34),
+                  (mid + 52, cy + 6), (mid, cy + 44), (mid - 52, cy + 6)],
+                 fill=(176, 30, 40))
+    draw.polygon([(mid - 40, cy - 24), (mid + 40, cy - 24),
+                  (mid + 40, cy + 2), (mid, cy + 32), (mid - 40, cy + 2)],
+                 fill=(245, 245, 245))
+    draw.ellipse([mid - 9, cy - 12, mid + 9, cy + 6], fill=INK)
+    draw.polygon([(mid - 5, cy + 2), (mid + 5, cy + 2), (mid + 9, cy + 18),
+                  (mid - 9, cy + 18)], fill=INK)
+
+
+# ---------------------------------------------------------------- stories
+
+HERO = {
+    "kicker": "UKRAINE WAR",
+    "headline": "Russian \u2018double-tap\u2019 strike kills boy, 7, and "
+                "paramedic in Kryvyi Rih",
+    "body": "Two ballistic missiles hit the city centre on World "
+            "Children\u2019s Day; a follow-up drone strike targeted "
+            "rescuers. Two killed, 42 injured, 23 apartment blocks and "
+            "a hospital damaged.",
 }
 
-FONT_DIR = "/usr/share/fonts/truetype/dejavu"
+GRID = [
+    {
+        "kicker": "CLIMATE \u2022 COP31",
+        "headline": "COP31 spills into overtime in Antalya",
+        "body": "Closing plenary suspended Friday night; the draft drops "
+                "fossil fuels and a $120bn finance target.",
+        "art": paint_planet,
+    },
+    {
+        "kicker": "JUSTICE \u2022 THE HAGUE",
+        "headline": "World court: Myanmar committed genocide",
+        "body": "The ICJ\u2019s first-ever state genocide finding, 9\u20136: "
+                "about 10,000 Rohingya killed in 2017; reparations ordered.",
+        "art": paint_court,
+    },
+    {
+        "kicker": "WEATHER \u2022 INDIA",
+        "headline": "Cyclone Akvan weakens over Odisha",
+        "body": "Landfall near Gopalpur on Friday at 70\u201380 kmph; "
+                "300,000 people evacuated as heavy rain and flooding "
+                "continue.",
+        "art": paint_storm,
+    },
+    {
+        "kicker": "TECH \u2022 CYBERSECURITY",
+        "headline": "JPMorgan, Visa, Mastercard hit in vendor breach",
+        "body": "Ransomware group n0n claims customer data from "
+                "third-party providers; no payment data taken, banks say.",
+        "art": paint_breach,
+    },
+]
+
+FOOTER_LABEL = "ALSO TODAY:"
+FOOTER_TEXT = ("Russia attacks Ukraine with 3 ballistic missiles and 148 "
+               "drones overnight \u2022 Ethiopia named host of COP32 in "
+               "2027 \u2022 39 trains cancelled as Akvan lashes India\u2019s "
+               "east coast")
 
 
-def load(kind, size):
-    names = {
-        "serif": "DejaVuSerif-Bold.ttf",
-        "bold": "DejaVuSans-Bold.ttf",
-        "plain": "DejaVuSans.ttf",
-    }
-    return ImageFont.truetype(f"{FONT_DIR}/{names[kind]}", size)
+# ---------------------------------------------------------------- assembly
+
+def draw_card(draw, box, story):
+    """One grid card: art band on top, kicker, headline, body below."""
+    x0, y0, x1, y1 = box
+    draw.rectangle(box, fill=CARD, outline=EDGE, width=1)
+    story["art"](draw, (x0, y0, x1, y0 + 80))
+    tx = x0 + 14
+    draw.text((tx, y0 + 90), story["kicker"],
+              font=typeface(19, bold=True), fill=KICKER)
+    head = split_lines(draw, story["headline"], typeface(25, bold=True),
+                       (x1 - x0) - 28)
+    y = put_lines(draw, tx, y0 + 112, head, typeface(25, bold=True), INK, 27)
+    body = split_lines(draw, story["body"], typeface(18), (x1 - x0) - 28)
+    put_lines(draw, tx, y + 4, body, typeface(18), MUTE, 20)
 
 
-def flow(pen, text, face, width):
-    """Split text into lines that fit width (greedy word wrap)."""
-    out, cur = [], ""
-    for word in text.split(" "):
-        nxt = f"{cur} {word}".strip()
-        if pen.textlength(nxt, font=face) <= width:
-            cur = nxt
+def draw_footer(draw, box):
+    """Beige strip: red label inline with two lines of briefs."""
+    x0, y0, x1, y1 = box
+    draw.rectangle(box, fill=SAND, outline=EDGE, width=1)
+    label_font = typeface(19, bold=True)
+    text_font = typeface(19)
+    label_w = draw.textlength(FOOTER_LABEL + " ", font=label_font)
+    first_w = (x1 - x0) - 28 - label_w
+    rest_w = (x1 - x0) - 28
+    words = FOOTER_TEXT.split()
+    lines, cur = [], ""
+    limit = first_w
+    for word in words:
+        trial = word if not cur else cur + " " + word
+        if draw.textlength(trial, font=text_font) <= limit:
+            cur = trial
         else:
-            if cur:
-                out.append(cur)
-            cur = word
+            lines.append(cur)
+            cur, limit = word, rest_w
     if cur:
-        out.append(cur)
-    return out
-
-
-def centred(pen, y, text, face, fill, canvas_w=SIZE):
-    w = pen.textlength(text, font=face)
-    pen.text(((canvas_w - w) / 2, y), text, font=face, fill=fill)
-
-
-def starburst(pen, cx, cy, radius, fill):
-    pts = []
-    for i in range(24):
-        ang = math.pi * i / 12
-        r = radius if i % 2 == 0 else radius * 0.45
-        pts.append((cx + r * math.cos(ang), cy + r * math.sin(ang)))
-    pen.polygon(pts, fill=fill)
-
-
-# ---------------------------------------------------------------- pictures
-
-def paint_kryvyi(pen, left, top, right, bottom):
-    """Kryvyi Rih at night: missile trails falling on a dark skyline."""
-    pen.rectangle([left, top, right, bottom], fill=(14, 18, 38))
-    rng = random.Random(21)
-    for _ in range(60):
-        sx = rng.randint(left + 6, right - 6)
-        sy = rng.randint(top + 6, bottom - 40)
-        r = rng.choice([1, 1, 2])
-        pen.ellipse([sx - r, sy - r, sx + r, sy + r], fill=(200, 205, 225))
-    ground = bottom - 6
-    for tx, th, tw in [(left + 14, 34, 30), (left + 56, 52, 26),
-                       (left + 96, 30, 28), (left + 138, 62, 26),
-                       (left + 178, 40, 28), (left + 220, 56, 26),
-                       (left + 262, 34, 28), (left + 304, 48, 26),
-                       (left + 346, 30, 28), (left + 388, 58, 26),
-                       (left + 430, 36, 28), (left + 472, 50, 26),
-                       (left + 514, 32, 28), (left + 556, 54, 26),
-                       (left + 598, 36, 28), (left + 640, 48, 26),
-                       (left + 682, 32, 28), (left + 724, 56, 26),
-                       (left + 766, 38, 28), (left + 808, 52, 26),
-                       (left + 850, 34, 28), (left + 892, 46, 26)]:
-        pen.rectangle([tx, ground - th, tx + tw, ground], fill=(40, 44, 66))
-        wy = ground - th + 7
-        while wy < ground - 5:
-            wx = tx + 4
-            while wx < tx + tw - 3:
-                if (wx + wy) % 3 == 0:
-                    pen.rectangle([wx, wy, wx + 3, wy + 4], fill=(255, 214, 120))
-                wx += 8
-            wy += 11
-    for hx, hy, deg in [(left + 120, top + 26, 62), (left + 330, top + 14, 58),
-                        (left + 560, top + 28, 64), (left + 790, top + 16, 56)]:
-        a = math.radians(deg)
-        pen.line([(hx - 60 * math.cos(a), hy - 60 * math.sin(a)), (hx, hy)],
-                 fill=(255, 150, 60), width=3)
-        pen.ellipse([hx - 6, hy - 6, hx + 6, hy + 6], fill=(255, 220, 120))
-    starburst(pen, left + 210, ground - 62, 13, (245, 158, 11))
-    starburst(pen, left + 660, ground - 56, 11, (245, 158, 11))
-    pen.rectangle([left, ground, right, bottom], fill=(20, 14, 34))
-
-
-def paint_cop31(pen, left, top, right, bottom):
-    """COP31 overtime: a globe under a hot sun, clock hands past midnight."""
-    pen.rectangle([left, top, right, bottom], fill=(214, 232, 240))
-    cx = (left + right) // 2 - 40
-    cy = top + 44
-    pen.ellipse([left + 8, top + 6, left + 34, top + 32], fill=(252, 196, 96))
-    pen.ellipse([left + 13, top + 11, left + 29, top + 27], fill=(255, 220, 140))
-    pen.ellipse([cx - 30, cy - 30, cx + 30, cy + 30], fill=(64, 110, 168))
-    for ex, ey, ew, eh, col in [(-20, -18, 22, 20, (96, 160, 110)),
-                                (4, 4, 18, 16, (96, 160, 110)),
-                                (-6, -24, 18, 14, (80, 140, 96))]:
-        pen.ellipse([cx + ex, cy + ey, cx + ex + ew, cy + ey + eh], fill=col)
-    pen.arc([cx - 30, cy - 30, cx + 30, cy + 30], start=270, end=90,
-            fill=(180, 205, 225), width=2)
-    pen.ellipse([cx - 11, cy - 30, cx + 11, cy + 30],
-                outline=(180, 205, 225), width=2)
-    kx, ky = right - 42, top + 40
-    pen.ellipse([kx - 16, ky - 16, kx + 16, ky + 16], fill=(255, 255, 255),
-                outline=(178, 28, 28), width=2)
-    pen.line([kx, ky, kx, ky - 11], fill=(178, 28, 28), width=2)
-    pen.line([kx, ky, kx + 8, ky + 3], fill=(178, 28, 28), width=2)
-
-
-def paint_icj(pen, left, top, right, bottom):
-    """Peace Palace: courthouse pediment, columns, scales of justice."""
-    pen.rectangle([left, top, right, bottom], fill=(238, 230, 208))
-    cx = (left + right) // 2
-    pen.polygon([(cx - 92, top + 22), (cx + 92, top + 22), (cx, top + 2)],
-                fill=(150, 120, 80))
-    pen.rectangle([cx - 92, top + 22, cx + 92, top + 28], fill=(120, 94, 60))
-    for colx in (cx - 84, cx - 34, cx + 18, cx + 68):
-        pen.rectangle([colx, top + 28, colx + 16, bottom - 10],
-                      fill=(250, 246, 236), outline=(150, 120, 80), width=1)
-    pen.rectangle([left + 10, bottom - 12, right - 10, bottom - 6],
-                  fill=(120, 94, 60))
-    sx = cx
-    sy = top + 34
-    pen.line([sx, sy, sx, sy + 20], fill=(90, 70, 50), width=2)
-    pen.line([sx - 15, sy + 2, sx + 15, sy + 2], fill=(90, 70, 50), width=2)
-    pen.polygon([(sx - 21, sy + 8), (sx - 9, sy + 8), (sx - 15, sy + 15)],
-                fill=(178, 28, 28))
-    pen.polygon([(sx + 9, sy + 8), (sx + 21, sy + 8), (sx + 15, sy + 15)],
-                fill=(178, 28, 28))
-
-
-def paint_akvan(pen, left, top, right, bottom):
-    """Cyclone Akvan: spiral over the Bay of Bengal, rain slanting in."""
-    pen.rectangle([left, top, right, bottom], fill=(188, 216, 228))
-    cx = (left + right) // 2
-    cy = top + 42
-    for r, col in [(34, (255, 255, 255)), (26, (120, 150, 180)),
-                   (18, (255, 255, 255)), (10, (64, 110, 168))]:
-        pen.arc([cx - r, cy - r, cx + r, cy + r], start=200, end=110,
-                fill=col, width=4)
-    pen.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], fill=(178, 28, 28))
-    rng = random.Random(7)
-    for _ in range(14):
-        rx = rng.randint(left + 8, right - 8)
-        ry = rng.randint(top + 58, bottom - 8)
-        pen.line([rx, ry, rx - 5, ry + 9], fill=(90, 130, 160), width=2)
-    pen.rectangle([left, bottom - 8, right, bottom], fill=(64, 110, 140))
-
-
-def paint_breach(pen, left, top, right, bottom):
-    """Vendor breach: a shield with a broken lock on a dark terminal."""
-    pen.rectangle([left, top, right, bottom], fill=(24, 28, 44))
-    rng = random.Random(3)
-    for _ in range(24):
-        sx = rng.randint(left + 8, right - 8)
-        sy = rng.randint(top + 8, bottom - 8)
-        pen.text((sx, sy), rng.choice(["0", "1"]), font=load("plain", 10),
-                 fill=(60, 70, 95))
-    cx = (left + right) // 2
-    cy = top + 42
-    pen.polygon([(cx - 30, cy - 22), (cx + 30, cy - 22), (cx + 30, cy + 6),
-                 (cx, cy + 30), (cx - 30, cy + 6)], fill=(178, 28, 28))
-    pen.polygon([(cx - 22, cy - 16), (cx + 22, cy - 16), (cx + 22, cy + 4),
-                 (cx, cy + 22), (cx - 22, cy + 4)], fill=(255, 255, 255))
-    pen.ellipse([cx - 7, cy - 8, cx + 7, cy + 6], fill=(24, 28, 44))
-    pen.rectangle([cx - 2, cy + 2, cx + 2, cy + 12], fill=(24, 28, 44))
-
-
-# ---------------------------------------------------------------- layout
-
-CARDS = [
-    ("CLIMATE  •  COP31",
-     "COP31 spills into overtime in Antalya",
-     "Closing plenary suspended Friday night; the draft drops fossil "
-     "fuels and a $120bn finance target.",
-     paint_cop31),
-    ("JUSTICE  •  THE HAGUE",
-     "World court: Myanmar committed genocide",
-     "The ICJ's first-ever state genocide finding, 9-6: about 10,000 "
-     "Rohingya killed in 2017; reparations ordered.",
-     paint_icj),
-    ("WEATHER  •  INDIA",
-     "Cyclone Akvan weakens over Odisha",
-     "Landfall near Gopalpur on Friday at 70-80 kmph; 300,000 people "
-     "evacuated as heavy rain and flooding continue.",
-     paint_akvan),
-    ("TECH  •  CYBERSECURITY",
-     "JPMorgan, Visa, Mastercard hit in vendor breach",
-     "Ransomware group n0n claims customer data from third-party "
-     "providers; no payment data taken, banks say.",
-     paint_breach),
-]
-
-GEOMETRY = [
-    (MARGIN, 460, 504, 692),
-    (520, 460, SIZE - MARGIN, 692),
-    (MARGIN, 704, 504, 936),
-    (520, 704, SIZE - MARGIN, 936),
-]
-
-
-def story_card(pen, box, kicker, headline, summary, painter):
-    left, top, right, bottom = box
-    pen.rectangle(box, fill=PAL["white"], outline=PAL["edge"], width=2)
-    painter(pen, left + 2, top + 2, right - 2, top + 86)
-    tx = left + 16
-    tw = right - 16 - tx
-    y = top + 96
-    pen.text((tx, y), kicker, font=load("bold", 15), fill=PAL["red"])
-    y += 24
-    head_face = load("bold", 21)
-    for line in flow(pen, headline, head_face, tw)[:2]:
-        pen.text((tx, y), line, font=head_face, fill=PAL["ink"])
-        y += 26
-    y += 4
-    body_face = load("plain", 15)
-    for line in flow(pen, summary, body_face, tw)[:2]:
-        pen.text((tx, y), line, font=body_face, fill=PAL["body"])
-        y += 20
+        lines.append(cur)
+    draw.text((x0 + 14, y0 + 6), FOOTER_LABEL, font=label_font, fill=KICKER)
+    y = y0 + 6
+    for i, line in enumerate(lines):
+        lx = x0 + 14 + (label_w if i == 0 else 0)
+        draw.text((lx, y), line, font=text_font, fill=INK)
+        y += 21
 
 
 def build():
-    img = Image.new("RGB", (SIZE, SIZE), PAL["paper"])
-    pen = ImageDraw.Draw(img)
+    rng = random.Random(20261121)
+    page = Image.new("RGB", (W, H), PAPER)
+    draw = ImageDraw.Draw(page)
 
-    pen.rectangle([0, 0, SIZE, 80], fill=PAL["wine"])
-    centred(pen, 13, "THE WORLD IN ONE IMAGE", load("bold", 24), PAL["white"])
-    centred(pen, 48, "THE DAY'S NEWS  •  ONE IMAGE", load("plain", 15),
-            PAL["sand"])
-    pen.rectangle([0, 80, SIZE, 84], fill=PAL["gold"])
+    # masthead banner
+    draw.rectangle([0, 0, W, 84], fill=MAROON)
+    put_centered(draw, W // 2, 12, "THE WORLD IN ONE IMAGE",
+                 typeface(38, bold=True), (255, 255, 255))
+    put_centered(draw, W // 2, 54, "THE DAY\u2019S NEWS \u2022 ONE IMAGE",
+                 typeface(19), GOLD)
+    draw.rectangle([0, 84, W, 88], fill=(217, 164, 65))
 
-    centred(pen, 94, "Saturday, 21 November 2026", load("serif", 44), PAL["ink"])
-    pen.line([MARGIN, 152, SIZE - MARGIN, 152], fill=PAL["red"], width=4)
-    pen.line([MARGIN, 160, SIZE - MARGIN, 160], fill=PAL["ink"], width=2)
+    # dateline
+    put_centered(draw, W // 2, 102, "Saturday, 21 November 2026",
+                 typeface(52, serif=True), INK)
+    draw.rectangle([MARGIN, 158, W - MARGIN, 161], fill=RULE_RED)
+    draw.rectangle([MARGIN, 164, W - MARGIN, 165], fill=INK)
 
-    hero = (MARGIN, 168, SIZE - MARGIN, 448)
-    pen.rectangle(hero, fill=PAL["white"], outline=PAL["edge"], width=2)
-    paint_kryvyi(pen, hero[0] + 2, hero[1] + 2, hero[2] - 2, hero[1] + 118)
-    tx = MARGIN + 20
-    tw = SIZE - MARGIN - 20 - tx
-    y = hero[1] + 128
-    pen.text((tx, y), "UKRAINE WAR", font=load("bold", 16),
-             fill=PAL["red"])
-    y += 27
-    head_face = load("bold", 28)
-    for line in flow(pen, "Russian 'double-tap' strike kills boy, 7, and paramedic in Kryvyi Rih",
-                     head_face, tw):
-        pen.text((tx, y), line, font=head_face, fill=PAL["ink"])
-        y += 34
-    y += 2
-    body_face = load("plain", 18)
-    hero_text = ("Two ballistic missiles hit the city centre on World "
-                 "Children's Day; a follow-up drone strike targeted "
-                 "rescuers. Two killed, 42 injured, 23 apartment blocks "
-                 "and a hospital damaged.")
-    for line in flow(pen, hero_text, body_face, tw):
-        pen.text((tx, y), line, font=body_face, fill=PAL["body"])
-        y += 23
+    # hero skyline + hero story
+    paint_night_city(draw, (MARGIN, 172, W - MARGIN, 288), rng)
+    draw.rectangle([MARGIN, 288, W - MARGIN, 462], fill=CARD,
+                   outline=EDGE, width=1)
+    draw.text((MARGIN + 16, 300), HERO["kicker"],
+              font=typeface(21, bold=True), fill=KICKER)
+    head = split_lines(draw, HERO["headline"], typeface(37, bold=True),
+                       INNER - 32)
+    y = put_lines(draw, MARGIN + 16, 324, head, typeface(37, bold=True),
+                  INK, 42)
+    body = split_lines(draw, HERO["body"], typeface(20), INNER - 32)
+    put_lines(draw, MARGIN + 16, y + 6, body, typeface(20), MUTE, 25)
 
-    for box, (kicker, headline, summary, painter) in zip(GEOMETRY, CARDS):
-        story_card(pen, box, kicker, headline, summary, painter)
+    # 2x2 grid of smaller stories
+    card_w = (INNER - 16) // 2
+    card_h = 236
+    top = 468
+    for i, story in enumerate(GRID):
+        cx = MARGIN + (i % 2) * (card_w + 16)
+        cy = top + (i // 2) * (card_h + 10)
+        draw_card(draw, (cx, cy, cx + card_w, cy + card_h), story)
 
-    top, bottom = 948, 1002
-    pen.rectangle([MARGIN, top, SIZE - MARGIN, bottom], fill=PAL["strip"],
-                  outline=PAL["edge"], width=2)
-    label = "ALSO TODAY:  "
-    lx = MARGIN + 14
-    pen.text((lx, top + 10), label, font=load("bold", 17), fill=PAL["red"])
-    lw = pen.textlength(label, font=load("bold", 17))
-    strip_text = ("Russia attacks Ukraine with 3 ballistic missiles and "
-                  "148 drones overnight  •  Ethiopia named host of COP32 "
-                  "in 2027  •  39 trains cancelled as Akvan lashes India's "
-                  "east coast")
-    yy = top + 10
-    for line in flow(pen, strip_text, load("plain", 17),
-                     SIZE - MARGIN - 14 - (lx + lw))[:2]:
-        pen.text((lx + lw, yy), line, font=load("plain", 17), fill=PAL["ink"])
-        yy += 22
+    # footer strip
+    draw_footer(draw, (MARGIN, 958, W - MARGIN, 1008))
 
-    img.save("/home/hatch/workspace/makefun/news-image-20261121/entry.png",
-             "PNG", optimize=True)
-    print("saved entry.png")
+    page.save("entry.png", format="PNG")
+    print("wrote entry.png (1024x1024)")
 
 
 if __name__ == "__main__":
